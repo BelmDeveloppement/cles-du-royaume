@@ -1,0 +1,439 @@
+<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Les clés du royaume · joueur</title><style>
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:#EEF1F8;color:#1B2A49;line-height:1.4}
+h1,h2,h3{margin:0 0 .4em}button,select,input,textarea{font:inherit}
+.btn{border:0;border-radius:10px;padding:.65em 1.1em;font-weight:700;background:#1B2A49;color:#fff;cursor:pointer}
+.btn:disabled{opacity:.4;cursor:not-allowed}.btn.alt{background:#E6EBF5;color:#1B2A49}.btn.red{background:#C0392B}.btn.green{background:#1E7B45}.btn.sm{padding:.35em .7em;font-size:.85em;border-radius:8px}
+.card{background:#fff;border-radius:14px;padding:14px 16px;box-shadow:0 1px 3px #1b2a4922;margin-bottom:12px}
+.mz{display:inline-flex;align-items:center;justify-content:center;width:1.7em;height:1.7em;border:2px solid;border-radius:50%;font-size:.75em;font-weight:800;margin:1px;background:#fff}.mz.on{color:#fff}
+.tag{display:inline-block;border-radius:99px;padding:.1em .7em;font-size:.8em;font-weight:700;background:#E6EBF5}
+.pill{display:inline-block;border-radius:99px;padding:.15em .8em;color:#fff;font-weight:800}
+.muted{color:#5b6785;font-size:.9em}.ok{color:#1E7B45;font-weight:700}.ko{color:#C0392B;font-weight:700}
+table{border-collapse:collapse;width:100%}th,td{padding:5px 8px;border-bottom:1px solid #e1e6f1;text-align:left;vertical-align:top}th{font-size:.8em;color:#5b6785;text-transform:uppercase}
+.foot{font-size:.75em;color:#7b86a3;text-align:center;padding:10px}
+body{max-width:720px;margin:0 auto}textarea,input{padding:8px;border:2px solid #cfd6e6;border-radius:10px}</style></head><body><div id="top"></div><div style="padding:10px"><div id="todo"></div><div id="work"></div><div id="rank"></div><div id="body"></div><div class="foot"><span id="st"></span><br>© 2026 SAS BELM DEVELOPPEMENT. Tous droits réservés.</div></div>
+<script>/* © 2026 SAS BELM DEVELOPPEMENT. Tous droits réservés.  Les clés du royaume : application compagnon (jeu 11). */
+'use strict';
+const KR = {};
+KR.DOM = {S:{nom:'SEGMENTER',c:'#1F6FA8'},A:{nom:'AUTHENTIFIER',c:'#7B3F98'},Z:{nom:'AUTORISER',c:'#C77700'},T:{nom:'TRACER',c:'#1E7B45'}};
+KR.TEAMCOL = [['Rouge','#D64541'],['Bleu','#2E6FD8'],['Vert','#2E9E6B'],['Jaune','#D9A400'],['Violet','#8E44AD']];
+KR.DEFAULT_RELAY = 'https://ntfy.sh';
+KR.TITRES = [[55,'RSSI de l’année'],[45,'RSSI'],[35,'Administrateur'],[25,'Technicien'],[0,'Stagiaire']];
+KR.titre = p => (KR.TITRES.find(t => p >= t[0]) || KR.TITRES[4])[1];
+KR.LET = ['A','B','C','D'];
+KR.STEPNAME = {dg:'Décision du DG', mission:'Mission', marche:'Marché', menaces:'Menaces', next:'Semaine suivante'};
+KR.TEMPS = {dg:1, mission:2, marche:3, menaces:4, next:5};
+KR.steps = (function () {
+  const s = [{k:'lobby', w:0}];
+  for (let w = 1; w <= 6; w++) {
+    if (w > 1) s.push({k:'dg', w});
+    s.push({k:'mission', w}, {k:'marche', w}, {k:'menaces', w});
+    if (w < 6) s.push({k:'next', w});
+  }
+  ['IN1','IN2','IN3','IN4'].forEach(id => s.push({k:'inj', id, w:7}));
+  s.push({k:'final', w:7}, {k:'bonus', w:7}, {k:'end', w:7});
+  return s;
+})();
+KR.stepLabel = st => {
+  if (!st) return '';
+  if (st.k === 'lobby') return 'Accueil · constitution des équipes';
+  if (st.k === 'inj') return 'Week-end de crise · ' + st.id.replace('IN', 'inject ');
+  if (st.k === 'final') return 'Vendredi 23 h 58 · l’attaque finale';
+  if (st.k === 'bonus') return 'Décompte final';
+  if (st.k === 'end') return 'Fin de partie';
+  return 'Semaine ' + st.w + ' sur 6 · Temps ' + KR.TEMPS[st.k] + ' sur 5 · ' + KR.STEPNAME[st.k];
+};
+KR.esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+KR.sleep = ms => new Promise(r => setTimeout(r, ms));
+KR.rid = (n) => { const a = 'abcdefghjkmnpqrstuvwxyz23456789'; let s = ''; const b = new Uint8Array(n); crypto.getRandomValues(b); b.forEach(x => s += a[x % a.length]); return s; };
+KR.hash = () => { const o = {}; location.hash.replace(/^#/, '').split('&').forEach(p => { const i = p.indexOf('='); if (i > 0) o[p.slice(0, i)] = decodeURIComponent(p.slice(i + 1)); }); return o; };
+KR.mesureByN = n => KR.PUB.mesures.find(m => m[0] === n);
+KR.owned = t => KR.PUB.mesures.filter(m => t.m[m[0] - 1]).map(m => m[0]);
+
+/* ---------------- Relais (ntfy) ---------------- */
+KR.Relay = function (base, sid) {
+  this.base = (base || KR.DEFAULT_RELAY).replace(/\/+$/, '');
+  this.tH = 'kr' + sid + 'h'; this.tP = 'kr' + sid + 'p';
+  this.status = 'init';
+};
+KR.Relay.prototype.post = async function (topic, obj) {
+  const body = JSON.stringify(obj);
+  for (let i = 0; i < 4; i++) {
+    try { const r = await fetch(this.base + '/' + topic, {method:'POST', body}); if (r.ok) return true; if (r.status === 429) await KR.sleep(3000); }
+    catch (e) { /* réseau */ }
+    await KR.sleep(500 * (i + 1));
+  }
+  return false;
+};
+KR.Relay.prototype.sub = function (topic, since, onmsg, onstatus) {
+  let last = since, es = null, dead = false;
+  const open = () => {
+    if (dead) return;
+    es = new EventSource(this.base + '/' + topic + '/sse?since=' + encodeURIComponent(last));
+    es.onopen = () => onstatus && onstatus('ok');
+    es.onerror = () => { onstatus && onstatus('retry'); try { es.close(); } catch (e) {} setTimeout(open, 2500); };
+    es.onmessage = e => {
+      let m; try { m = JSON.parse(e.data); } catch (x) { return; }
+      if (m.event && m.event !== 'message') return;
+      if (m.id) last = m.id;
+      let o; try { o = JSON.parse(m.message); } catch (x) { return; }
+      onmsg(o, m);
+    };
+  };
+  open();
+  return () => { dead = true; try { es.close(); } catch (e) {} };
+};
+/* Etat diffusé en morceaux (limite ntfy : 4096 octets) */
+KR.CH = 1500;
+KR.Relay.prototype.pubState = function (st) {
+  const s = JSON.stringify(st), n = Math.ceil(s.length / KR.CH);
+  this._pending = {v: st.v, s, n};
+  if (this._busy) return;
+  this._busy = true;
+  (async () => {
+    while (this._pending) {
+      const p = this._pending; this._pending = null;
+      let ok = true;
+      for (let i = 0; i < p.n && ok; i++) ok = await this.post(this.tH, {v: p.v, i, n: p.n, d: p.s.slice(i * KR.CH, (i + 1) * KR.CH)});
+      this.lastOk = ok;
+    }
+    this._busy = false;
+  })();
+};
+KR.Assembler = function (cb) {
+  const parts = {}; let cur = -1;
+  return o => {
+    if (o == null || o.v == null || o.v < cur) return;
+    const p = parts[o.v] || (parts[o.v] = {n: o.n, a: []});
+    p.a[o.i] = o.d;
+    let ok = true; for (let i = 0; i < p.n; i++) if (p.a[i] == null) ok = false;
+    if (ok && o.v > cur) {
+      cur = o.v;
+      try { cb(JSON.parse(p.a.join(''))); } catch (e) { console.error(e); }
+      Object.keys(parts).forEach(k => { if (+k < cur) delete parts[k]; });
+    }
+  };
+};
+
+/* ---------------- Utilitaires d'affichage ---------------- */
+KR.fmtT = s => { s = Math.max(0, Math.round(s)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+KR.mesGrid = (t, small) => KR.PUB.mesures.map(m => {
+  const on = t.m[m[0] - 1], d = KR.DOM[m[3]];
+  return `<span class="mz ${on ? 'on' : ''}" title="${KR.esc(m[1])}" style="${on ? 'background:' + d.c + ';border-color:' + d.c : 'border-color:' + d.c + '55;color:' + d.c}">${m[0]}</span>`;
+}).join('');
+KR.CSS = `
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:#EEF1F8;color:#1B2A49;line-height:1.4}
+h1,h2,h3{margin:0 0 .4em}button,select,input,textarea{font:inherit}
+.btn{border:0;border-radius:10px;padding:.65em 1.1em;font-weight:700;background:#1B2A49;color:#fff;cursor:pointer}
+.btn:disabled{opacity:.4;cursor:not-allowed}.btn.alt{background:#E6EBF5;color:#1B2A49}.btn.red{background:#C0392B}.btn.green{background:#1E7B45}.btn.sm{padding:.35em .7em;font-size:.85em;border-radius:8px}
+.card{background:#fff;border-radius:14px;padding:14px 16px;box-shadow:0 1px 3px #1b2a4922;margin-bottom:12px}
+.mz{display:inline-flex;align-items:center;justify-content:center;width:1.7em;height:1.7em;border:2px solid;border-radius:50%;font-size:.75em;font-weight:800;margin:1px;background:#fff}.mz.on{color:#fff}
+.tag{display:inline-block;border-radius:99px;padding:.1em .7em;font-size:.8em;font-weight:700;background:#E6EBF5}
+.pill{display:inline-block;border-radius:99px;padding:.15em .8em;color:#fff;font-weight:800}
+.muted{color:#5b6785;font-size:.9em}.ok{color:#1E7B45;font-weight:700}.ko{color:#C0392B;font-weight:700}
+table{border-collapse:collapse;width:100%}th,td{padding:5px 8px;border-bottom:1px solid #e1e6f1;text-align:left;vertical-align:top}th{font-size:.8em;color:#5b6785;text-transform:uppercase}
+.foot{font-size:.75em;color:#7b86a3;text-align:center;padding:10px}
+`;
+KR.FOOT = '© 2026 SAS BELM DEVELOPPEMENT. Tous droits réservés. · Les clés du royaume · application compagnon';
+</script><script>KR.PUB={"missions":[{"id":"MI01","titre":"L’adresse MAC et son fabricant","dom":"S","contexte":"Un scanner inconnu apparaît sur le réseau de l’entrepôt avec l’adresse MAC 00:1A:2B:3C:4D:5E. Le filtrage MAC de TransLor ne contient que les 40 adresses de l’inventaire.","q1":"Quelle partie de l’adresse identifie le fabricant, et combien de bits représente-t-elle ?","q2":"Pourquoi le filtrage MAC ne suffit-il pas pour sécuriser l’accès à l’entrepôt ?","opts":["Parce qu’une adresse MAC a 48 bits","Parce que les switchs ne savent pas filtrer les MAC","Parce que le filtrage MAC est interdit par la loi","Parce qu’elle circule en clair et se copie facilement : elle n’authentifie rien"]},{"id":"MI02","titre":"Quel masque générique ?","dom":"S","contexte":"Une ACL doit autoriser le bloc de la direction : 10.1.20.64/27. Le routeur Cisco veut un masque générique (wildcard).","q1":"Donnez la première adresse, la dernière adresse et le masque générique de ce bloc.","q2":"Quelle ligne autorise ce bloc, et lui seul, vers le serveur de fichiers 10.1.40.10 ?","opts":["permit ip 10.1.20.64 0.0.0.255 host 10.1.40.10","permit ip 10.1.20.64 0.0.0.31 host 10.1.40.10","permit ip 10.1.20.0 0.0.0.31 host 10.1.40.10","permit ip any host 10.1.40.10"]},{"id":"MI03","titre":"L’ordre des règles","dom":"S","contexte":"Une ACL de TransLor, lue de haut en bas : (1) deny ip host 10.1.30.5 any ; (2) permit ip 10.1.30.0 0.0.0.255 any ; (3) deny ip any any. La première règle qui correspond s’applique.","q1":"Que devient un paquet venant de 10.1.30.5, un autre de 10.1.30.6, un troisième de 10.1.40.1 ?","q2":"On inverse les règles 1 et 2. Que devient 10.1.30.5 ?","opts":["Il reste refusé","Il est mis en quarantaine","Il est autorisé, la règle large passe avant la règle précise","Le routeur affiche une erreur"]},{"id":"MI04","titre":"Lire la configuration d’un trunk","dom":"S","contexte":"Configuration du trunk entre deux switchs : allowed vlan 10,20,30,40 ; native vlan 10. Les VLAN 10 (direction), 20 (entrepôt), 30 (tablettes), 40 (serveurs) circulent.","q1":"Combien de VLAN circulent avec une étiquette 802.1Q et lequel circule sans étiquette ?","q2":"Quelle correction durcit ce trunk contre le double tag ?","opts":["Passer le native VLAN sur le VLAN 40 des serveurs","Supprimer le VLAN 20","Autoriser tous les VLAN sur le trunk","Utiliser un native VLAN dédié et inutilisé (ex. 999)"]},{"id":"MI05","titre":"Découper le réseau plat de TransLor","dom":"S","contexte":"TransLor veut séparer cinq VLAN : direction 24 postes, entrepôt 40, tablettes 100, serveurs 10, invités 30. Prévoir 1 adresse de passerelle par VLAN, sans croissance. Tailles disponibles : /27 (30 utilisables), /26 (62), /25 (126), /28 (14).","q1":"Donnez le masque de chaque VLAN.","q2":"Les cinq blocs tiennent-ils dans l’actuel 192.168.1.0/24 (256 adresses) ?","opts":["Oui, il reste de la marge","Non : 32 + 64 + 128 + 16 + 64 = 304, supérieur à 256","Oui : 32 + 64 + 128 + 16 + 64 = 244","Non : 24 + 40 + 100 + 10 + 30 = 204, supérieur à 256"]},{"id":"MI06","titre":"Qui devient Root Bridge ?","dom":"S","contexte":"Trois switchs STP : SW1 priorité 32768, MAC 00:1A:00:00:00:10 ; SW2 priorité 32768, MAC 00:1A:00:00:00:05 ; SW3 priorité 16384, MAC 00:1A:00:00:00:FF. Le Root Bridge est le switch avec la priorité la plus basse ; en cas d’égalité, l’adresse MAC la plus basse.","q1":"Quel switch devient Root Bridge ? Et si SW3 est éteint ?","q2":"Comment empêcher un switch inconnu, branché en salle de pause, de devenir racine ?","opts":["Lui donner un autre nom","Désactiver STP partout","Activer Root Guard et BPDU Guard sur les ports d’accès","Augmenter la priorité de SW3"]},{"id":"MI07","titre":"Combien de temps pour casser ?","dom":"A","contexte":"Un attaquant teste 10 milliards (10¹⁰) de mots de passe par seconde contre des hachés rapides. Un gestionnaire a choisi 10 caractères parmi 36 (minuscules et chiffres). La politique voudrait 12 caractères parmi 62.","q1":"Combien de temps pour tester toutes les combinaisons de ce mot de passe de 10 caractères ?","q2":"Quel est l’ordre de grandeur pour 12 caractères parmi 62 ?","opts":["Environ 4 jours encore","Environ 10 200 ans","Environ 6 heures","Environ 3 secondes"]},{"id":"MI08","titre":"Lire une ligne de /etc/shadow","dom":"A","contexte":"Ligne du serveur Linux de TransLor : alice:$6$Xq3k9a$Rj0w…Zt1:19700:0:90:7:::  Le préfixe $6$ désigne SHA-512 ; entre le deuxième et le troisième $ se trouve le sel.","q1":"Quel est l’algorithme, quel est le sel, et au bout de combien de jours le mot de passe doit-il être changé ?","q2":"Deux utilisateurs ont le même mot de passe mais des sels différents. Que voit-on dans le fichier ?","opts":["Deux hachés identiques","Un seul haché pour les deux","Aucun haché","Deux hachés différents"]},{"id":"MI09","titre":"Combien de mots de passe identiques ?","dom":"A","contexte":"Extrait d’une base SANS sel : bob 5f4dcc3b…cf99 ; carole 482c811d…a0b3 ; dan 5f4dcc3b…cf99 ; eve 5f4dcc3b…cf99 ; fred 7c6a180b…1d0a ; gina 5f4dcc3b…cf99.","q1":"Combien de comptes ont le même mot de passe, et quelle part des 6 cela représente-t-il ?","q2":"Quelle correction supprime ce problème ?","opts":["Un haché plus court","Cacher la base de données","Un haché lent avec un sel différent par compte","Demander aux utilisateurs de ne pas choisir le même mot de passe"]},{"id":"MI10","titre":"Les facteurs d’authentification","dom":"A","contexte":"TransLor prépare le MFA. Quatre éléments : (1) code TOTP de l’application ; (2) code PIN de 6 chiffres ; (3) empreinte digitale ; (4) clé de sécurité USB FIDO2.","q1":"Classez chaque élément : connaissance, possession ou inhérence.","q2":"Un PIN et un mot de passe forment-ils une authentification multifacteur ?","opts":["Non, ce sont deux facteurs de connaissance","Oui, ce sont deux éléments","Oui, car le PIN est court","Non, il manque l’empreinte"]},{"id":"MI11","titre":"La fatigue MFA","dom":"A","contexte":"Journal du MFA : 18 demandes de validation en 12 minutes sur le compte de la comptable. 17 sont refusées, la 18e est approuvée à 02 h 14.","q1":"Quelle est la fréquence moyenne des demandes par minute, et quelle part a été refusée ?","q2":"Quelle mesure empêche le plus directement cette attaque ?","opts":["Envoyer encore plus de notifications","Demander de saisir un nombre affiché à l’écran, limiter les demandes et alerter","Supprimer le MFA","Changer l’heure des notifications"]},{"id":"MI12","titre":"L’ordre de Kerberos","dom":"A","contexte":"Un salarié ouvre une session puis accède au serveur de fichiers. Trois étapes : (X) présenter le ticket de service au serveur de fichiers ; (Y) obtenir un TGT auprès du KDC avec son mot de passe ; (Z) demander au KDC un ticket de service avec le TGT.","q1":"Dans quel ordre se déroulent ces étapes ?","q2":"Un poste a une horloge en retard de 8 minutes. Que se passe-t-il, avec la tolérance Kerberos par défaut ?","opts":["L’authentification échoue : la tolérance par défaut est de 5 minutes","Rien, Kerberos ne mesure pas le temps","L’authentification réussit mais plus lentement","Le poste obtient plus de droits"]},{"id":"MI13","titre":"La chaîne AGDLP","dom":"Z","contexte":"Pour le dossier « Tarifs », TransLor veut : comptabilité en modification, litiges en lecture. Éléments : comptes (A), groupes globaux de métier (G), groupes de domaine local (DL), permissions (P).","q1":"Placez dans l’ordre les maillons de la chaîne AGDLP et donnez le rôle de chacun.","q2":"Un nouveau comptable arrive. Que faut-il faire sur le serveur de fichiers ?","opts":["Modifier l’ACL du dossier pour ajouter son compte","Rien : l’ajouter au groupe global de la comptabilité","Lui donner un compte administrateur temporaire","Copier les droits d’un collègue à la main"]},{"id":"MI14","titre":"Les droits effectifs","dom":"Z","contexte":"Sur le partage « Litiges » : permission de partage « Lecture » pour tous ; permissions NTFS : groupe Litiges « Modifier », groupe Stagiaires « Lecture ». Camille est membre des deux groupes.","q1":"Quels sont les droits NTFS cumulés de Camille, et quel est son droit effectif à travers le réseau ?","q2":"Que faut-il retenir pour la conception des partages ?","opts":["Toujours restreindre le partage au maximum","Ne jamais utiliser de partage","Mettre « Contrôle total » sur le partage et gérer les droits en NTFS","Donner Lecture à tout le monde"]},{"id":"MI15","titre":"Des droits en trop","dom":"Z","contexte":"Matrice des droits accordés : Alice Tarifs RW, Litiges R ; Bob Tarifs R, Litiges RW ; Carole Litiges RW, Paie R ; Dan Tarifs RW, Paie RW. Besoins réels : Alice Tarifs RW ; Bob Tarifs R, Litiges R ; Carole Litiges RW ; Dan Paie RW.","q1":"Combien de droits accordés dépassent le besoin, et quelle part des 8 droits accordés ?","q2":"Quel principe corrige ce constat ?","opts":["Le droit à l’erreur","Le moindre privilège : donner seulement ce dont chacun a besoin","La séparation du réseau en VLAN","Le hachage des mots de passe"]},{"id":"MI16","titre":"Arrivée, mutation, départ : la conformité","dom":"Z","contexte":"Sur l’année, 12 salariés sont partis. Comptes désactivés le jour du départ : 9 ; après 3 semaines : 2 ; jamais : 1.","q1":"Quel est le taux de départs traités conformément à la règle « désactivation le jour J », et combien de comptes restent exposés ?","q2":"Quelle mesure améliore le plus durablement ce taux ?","opts":["Une note de rappel aux managers","Supprimer les comptes une fois par an","Un processus où les RH déclenchent automatiquement la coupure de tous les accès","Interdire aux salariés de partir"]},{"id":"MI17","titre":"Trop d’administrateurs","dom":"Z","contexte":"L’annuaire de TransLor compte 120 salariés et 13 comptes « Administrateurs du domaine ». La cible interne est de 2 % de l’effectif au plus.","q1":"Quelle part de l’effectif cela représente-t-il, et combien de comptes la cible autorise-t-elle ?","q2":"Comment continuer à administrer avec si peu de comptes ?","opts":["En partageant les mots de passe","En donnant les droits à tout le monde","Avec des comptes d’administration nominatifs distincts du compte du quotidien, et des droits délégués par niveau","En supprimant l’annuaire"]},{"id":"MI18","titre":"LSDOU : quelle GPO l’emporte ?","dom":"Z","contexte":"Verrouillage de session : GPO locale 15 min ; GPO du site : non définie ; GPO du domaine 10 min ; GPO de l’OU Entrepôt 5 min. Les GPO s’appliquent dans l’ordre Local, Site, Domaine, OU ; la dernière appliquée l’emporte.","q1":"Quel délai s’applique à un poste de l’OU Entrepôt ?","q2":"Le domaine passe sa GPO en mode « Appliqué » (Enforced). Quel délai s’applique alors ?","opts":["10 minutes","5 minutes","15 minutes","Aucun"]},{"id":"MI19","titre":"Lire un journal de sécurité Windows","dom":"T","contexte":"Extrait : 23:57:41 ID 4625 (échec) adupont depuis 203.0.113.7 ; 23:57:44 ID 4625 adupont ; 23:57:47 ID 4625 adupont ; 23:57:50 ID 4625 adupont ; 23:57:55 ID 4624 (succès) adupont ; 23:58:20 ID 4672 (privilèges spéciaux) adupont.","q1":"Combien d’échecs précèdent le succès, en combien de temps, et quel est le signal le plus inquiétant ?","q2":"Quelle règle d’alerte détecterait ce scénario ?","opts":["Alerter à chaque connexion réussie","Ne jamais alerter, on lit le journal le lundi","Alerter uniquement le week-end","Alerter si 4625 puis 4624 pour le même compte et la même adresse en moins de 60 secondes"]},{"id":"MI20","titre":"Lire un journal RADIUS","dom":"T","contexte":"Journal du serveur RADIUS sur 10 tentatives de connexion Wi-Fi : 7 Access-Accept et 3 Access-Reject. Les 3 rejets portent le motif « certificat expiré » et concernent les tablettes T12, T31 et T47.","q1":"Quel est le taux de rejet, et quelle est la cause ?","q2":"Quelle action prévient la récidive ?","opts":["Désactiver l’authentification 802.1X","Remplacer le certificat par un mot de passe partagé","Ignorer, ce sont des tablettes","Renouveler les certificats et mettre une alerte 30 jours avant l’expiration"]},{"id":"MI21","titre":"Une règle d’alerte à calibrer","dom":"T","contexte":"Règle : alerte si 5 échecs ou plus pour un même compte en 60 secondes. Compte X : échecs à 00:00:05, 00:00:20, 00:00:31, 00:00:44, 00:00:58 et 00:01:30. Compte Y : échecs à 00:00:10, 00:00:50, 00:01:40, 00:02:30 et 00:03:20.","q1":"Quel compte déclenche l’alerte, et à quelle heure ?","q2":"Un manager trouve que la règle fait trop de bruit. Que décidez-vous ?","opts":["La garder, ajuster le seuil par type de compte et exclure les comptes de test","La supprimer","Passer le seuil à 5 000","Éteindre le serveur de journaux"]},{"id":"MI22","titre":"La revue des droits","dom":"T","contexte":"TransLor a vérifié 160 appartenances à des groupes sensibles. 12 sont injustifiées (départ, mutation, accès temporaire oublié). La vérification prend 2 minutes par appartenance.","q1":"Quel est le taux d’écart, et quelle durée représente la revue ?","q2":"Qui doit décider si une appartenance est justifiée ?","opts":["Le responsable du groupe ou du métier, qui connaît le besoin","Le service informatique seul","Chaque utilisateur pour lui-même","Le DG"]},{"id":"MI23","titre":"Les horloges ne sont pas d’accord","dom":"T","contexte":"Pour un même événement, le journal du pare-feu indique 14 h 02 min 10 s et celui du serveur d’annuaire 14 h 09 min 40 s. Kerberos tolère 5 minutes d’écart.","q1":"Quel est l’écart entre les deux horloges, et dépasse-t-il la tolérance de Kerberos ?","q2":"Quelle correction mettez-vous en place ?","opts":["Changer l’heure à la main chaque semaine","Supprimer les horodatages des journaux","Allonger la tolérance Kerberos à 1 heure","Synchroniser toutes les machines sur une source NTP commune"]},{"id":"MI24","titre":"Un indicateur, un risque","dom":"T","contexte":"Tableau de bord des accès de TransLor : 120 comptes dont 90 avec le MFA actif. 18 comptes n’ont pas servi depuis plus de 90 jours.","q1":"Quelle est la part de comptes sans MFA, et la part de comptes inactifs ?","q2":"L’indicateur « % de comptes inactifs depuis 90 jours » est-il un KPI ou un KRI ?","opts":["Un KRI : il mesure l’exposition au risque, plus il monte, plus le risque augmente","Un KPI : il mesure la performance du service informatique","Ni l’un ni l’autre","Un indicateur financier"]}],"injects":[{"id":"IN0","titre":"VENDREDI 23 H 58","heure":"Vendredi 23 h 58","histoire":"Le compte VPN d’un ancien prestataire, parti il y a 4 mois, se connecte sans second facteur. Il atteint le TMS depuis un réseau sans cloisonnement et télécharge la base clients : 1,8 Go en 12 minutes.","q":null,"opts":null},{"id":"IN1","titre":"Inject H+0","heure":"Vendredi 23 h 59","histoire":"L’alerte du VPN signale la connexion du compte presta-martin depuis une adresse à l’étranger. Le contrat de ce prestataire a pris fin en juin. Le TMS est consulté en ce moment même.","q":"Quelle est votre première action ?","opts":["Changer le mot de passe du compte et attendre","Supprimer le compte pour effacer les traces","Désactiver le compte, couper ses sessions et conserver les journaux","Ne rien faire avant lundi, l’équipe est absente"]},{"id":"IN2","titre":"Inject H+3","heure":"Samedi 3 h 00","histoire":"Audit éclair des comptes prestataires : 14 comptes existent. Les contrats de 9 d’entre eux sont terminés, mais seuls 4 de ces 9 comptes ont été désactivés.","q":"Combien de comptes sont actifs à tort, et quelle part des 14 comptes cela représente-t-il ?","opts":["4 comptes, soit 29 %","5 comptes, soit 36 %","9 comptes, soit 64 %","10 comptes, soit 71 %"]},{"id":"IN3","titre":"Inject H+24","heure":"Samedi 23 h 00","histoire":"Les journaux montrent que l’attaquant a élargi ses droits en utilisant un compte « Administrateur du domaine ». L’annuaire de TransLor, qui compte 120 salariés, contient 13 comptes de ce type, utilisés aussi pour lire les e-mails.","q":"Quelle correction structurelle décidez-vous ?","opts":["Garder les 13 comptes mais changer leurs mots de passe","Réduire à 2 ou 3 comptes nominatifs séparés des comptes du quotidien, utilisés seulement pour administrer","Supprimer tous les comptes d’administrateur","Partager un seul compte entre les administrateurs"]},{"id":"IN4","titre":"Inject H+60","heure":"Lundi 9 h 00","histoire":"Un grand client (20 % du CA) demande, avant de renouveler son contrat, la preuve que les accès à ses données sont maîtrisés.","q":"Quelle preuve lui fournissez-vous ?","opts":["Une déclaration du DG indiquant que tout va bien","Le compte rendu de la dernière revue trimestrielle des droits : groupes, membres recertifiés, écarts corrigés, dates","La liste de tous les mots de passe pour qu’il vérifie","Une copie de la configuration du pare-feu"]}],"mesures":[[1,"VLAN par métier","Réseau découpé en VLAN par métier et par risque","S",3,"Direction, entrepôt, tablettes, serveurs, invités, prestataires : chacun son VLAN."],[2,"ACL entre VLAN","ACL entre VLAN : tout refuser sauf le nécessaire","S",2,"Le routeur ou le pare-feu ne laisse passer que les flux listés, dans le bon ordre."],[3,"Trunks durcis","Trunks et ports durcis (native VLAN, VLAN autorisés)","S",2,"Native VLAN inutilisé, VLAN listés sur les trunks, ports libres coupés, Root Guard."],[4,"802.1X + RADIUS","802.1X et RADIUS (EAP-TLS) sur prises et Wi-Fi","S",4,"Aucun appareil n’obtient un port ou le Wi-Fi sans s’être authentifié."],[5,"Mots de passe solides","Mots de passe longs, hachés avec sel, sans valeur d’usine","A",2,"Au moins 12 caractères, hachage lent et salé, mots de passe d’usine changés."],[6,"MFA","Authentification multifacteur (VPN, messagerie, admins)","A",2,"Un mot de passe volé ne suffit plus : code TOTP ou clé physique."],[7,"Annuaire durci","Annuaire AD durci, Kerberos et horloges synchronisées","A",4,"Peu d’administrateurs de domaine, niveaux d’administration, NTP, sauvegarde de l’AD."],[8,"Droits par groupes","Droits par groupes (AGDLP), moindre privilège","Z",3,"Les droits suivent le métier, jamais la personne : plus d’ACL au cas par cas."],[9,"Comptes nominatifs","Comptes nominatifs, administration séparée","Z",2,"Fin du compte « admin » partagé ; un compte d’administration distinct du compte du quotidien."],[10,"Arrivée-mutation-départ","Processus arrivée, mutation, départ","Z",2,"Les RH déclenchent la création, le changement et la coupure des accès le jour J."],[11,"Journaux + alertes","Journaux d’accès centralisés et alertes","T",3,"AD, RADIUS et VPN journalisés, horodatés (NTP), alertes sur échecs répétés."],[12,"Revue des droits","Revue trimestrielle des droits","T",2,"Chaque responsable recertifie les membres de ses groupes ; les écarts sont corrigés."]]};</script><script>/* Écran JOUEUR */
+const H = KR.hash();
+const SID = H.s, RELAY = H.r || KR.DEFAULT_RELAY;
+const LS = 'kr_player_' + SID;
+let me = {};
+try { me = JSON.parse(localStorage.getItem(LS) || '{}'); } catch (e) {}
+if (!me.pid) me.pid = 'p' + KR.rid(8);
+const save = () => { try { localStorage.setItem(LS, JSON.stringify(me)); } catch (e) {} };
+let pub = null, skew = 0, status = 'connexion…';
+let draft = {};          // brouillons de réponse {mid:{q1,q2,tq1,tq2}}
+let sent = {};           // {mid:{ind:true,team:true}}
+try { draft = JSON.parse(localStorage.getItem(LS + '_d') || '{}'); sent = JSON.parse(localStorage.getItem(LS + '_s') || '{}'); } catch (e) {}
+const saveD = () => { try { localStorage.setItem(LS + '_d', JSON.stringify(draft)); localStorage.setItem(LS + '_s', JSON.stringify(sent)); } catch (e) {} };
+const $ = id => document.getElementById(id);
+
+if (!SID) { document.body.innerHTML = '<div class="card" style="margin:20px">Lien incomplet. Scannez le QR code affiché par l’enseignant.</div>'; throw new Error('no sid'); }
+const relay = new KR.Relay(RELAY, SID);
+const send = o => relay.post(relay.tP, Object.assign({pid: me.pid}, o));
+const asm = KR.Assembler(s => { pub = s; skew = Date.now() - (s.now || Date.now()); status = 'connecté'; render(); });
+relay.sub(relay.tH, 'all', asm, st => { if (st !== 'ok') { status = 'reconnexion…'; renderTop(); } });
+setInterval(() => { if (pub && pub.tm && pub.tm.t0) renderTimer(); }, 500);
+
+const myRec = () => pub && pub.pl && pub.pl[me.pid];
+const myTeam = () => { const r = myRec(); return r ? pub.teams[r[1]] : null; };
+const isSpk = () => { const t = myTeam(); return t && t.spk === me.pid; };
+const curStep = () => pub ? KR.steps[pub.si] : null;
+const mission = id => KR.PUB.missions.find(m => m.id === id);
+const inject = id => KR.PUB.injects.find(m => m.id === id);
+
+function join(tidx) {
+  const n = ($('nm').value || '').trim().slice(0, 18);
+  if (!n) { $('err').textContent = 'Saisissez votre prénom.'; return; }
+  me.n = n; me.t = tidx; save();
+  send({k:'J', n, t: tidx});
+  status = 'inscription envoyée…'; render();
+}
+window.join = join;
+
+/* ---------- haut de l'écran ---------- */
+function renderTop() {
+  const t = myTeam(), r = myRec();
+  let h = '';
+  if (t) {
+    h = `<div style="background:${t.c};color:#fff;padding:10px 14px;border-radius:0 0 16px 16px">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+      <div><b style="font-size:1.1em">Équipe ${KR.esc(t.n)}</b> · ${KR.esc(r[0])}${isSpk() ? ' · <span class="tag" style="background:#fff;color:#1B2A49">★ porte-parole</span>' : ''}</div>
+      <div style="font-weight:800">${t.j} jeton${t.j > 1 ? 's' : ''} · ${t.p} point${t.p > 1 ? 's' : ''}</div></div>
+    <div style="margin-top:4px">${KR.mesGrid(t)}</div></div>`;
+  }
+  $('top').innerHTML = h;
+  $('st').textContent = status;
+}
+function renderTimer() {
+  const el = $('timer'); if (!el) return;
+  const rem = pub.tm.dur - (Date.now() - skew - pub.tm.t0) / 1000;
+  el.textContent = rem > 0 ? '⏱ ' + KR.fmtT(rem) : '⏱ Temps écoulé : terminez votre saisie';
+  el.style.color = rem > 0 && rem < 30 ? '#C0392B' : '#1B2A49';
+}
+
+/* ---------- consignes : que faire maintenant ---------- */
+function todo() {
+  const st = curStep(), c = pub.cur || {}, t = myTeam(), spk = isSpk();
+  const spkName = t && pub.pl[t.spk] ? pub.pl[t.spk][0] : '…';
+  let title = '', items = [], next = '', wait = false;
+  const k = st.k;
+  if (k === 'lobby') {
+    title = 'Accueil'; wait = true;
+    items = ['Vous êtes inscrit dans l’équipe <b>' + KR.esc(t.n) + '</b>.', 'Chaque équipe prend un pion posé sur la case 0 et <b>4 jetons</b> de sa couleur.', 'Triez les cartes en 4 piles (Missions, Menaces, Décisions du DG, Injects). Posez le marqueur neutre sur S1.', 'Attendez que l’enseignant lance la partie : vous n’avez rien à saisir.'];
+    next = 'Ensuite : Semaine 1, Mission.';
+  } else if (k === 'dg') {
+    title = 'Décision du DG';
+    items = ['Une personne de l’équipe retourne la <b>carte DG</b> du dessus de la pile et la lit à voix haute.',
+      'Les jetons et points de l’effet sont appliqués <b>automatiquement</b> à votre équipe : regardez le bandeau en haut pour vérifier.',
+      'Remettez ou prenez les jetons physiques correspondants pour que le plateau reste d’accord avec l’application.'];
+    if (pub.dgx && pub.dgx.id) items.push('<b>Effet :</b> ' + KR.esc(pub.dgx.effet));
+    next = 'Ensuite : la Mission de la semaine.';
+  } else if (k === 'mission') {
+    title = 'Mission';
+    if (!c.mid) { wait = true; items = ['Piochez une carte <b>Mission</b> et posez-la recto visible au centre de la table.', 'L’enseignant va ouvrir la Mission dans l’application : <b>attendez</b>, vous n’avez rien à saisir pour l’instant.']; }
+    else if (!c.rev) {
+      items = ['Lisez la carte <b>' + c.mid + '</b> (la même s’affiche ci-dessous).',
+        'Répondez <b>seul</b> à la Q1 puis à la Q2 ci-dessous, puis appuyez sur « Envoyer ma réponse » (4 minutes).',
+        'Discutez ensuite avec votre équipe pour fixer <b>une seule réponse d’équipe</b>.',
+        spk ? '<b>Vous êtes le porte-parole</b> cette semaine : saisissez la réponse d’équipe dans le cadre « Réponse de l’équipe » puis envoyez-la.'
+            : 'Le <b>porte-parole</b> de cette semaine, <b>' + KR.esc(spkName) + '</b>, saisit la réponse d’équipe : donnez-lui votre avis.'];
+      next = 'Ensuite : l’enseignant révèle la correction.';
+    } else {
+      items = ['Lisez la <b>correction</b> ci-dessous, avec votre équipe.',
+        'Indiquez si votre propre Q1 était juste (bouton « Ma Q1 était juste / fausse »).',
+        'Les jetons et points de l’équipe sont ajoutés automatiquement : vérifiez le bandeau en haut, puis prenez les jetons physiques.'];
+      next = 'Ensuite : le Marché (l’enseignant fait avancer).';
+    }
+  } else if (k === 'marche') {
+    title = 'Marché';
+    items = ['Regardez les <b>menaces de la semaine</b> et de la semaine prochaine (cartes recto visible) : quelles mesures les arrêteraient ?',
+      'Décidez <b>ensemble</b> des mesures à acheter. Chacune ne s’achète qu’<b>une seule fois</b>, et vous ne pouvez pas dépenser plus de jetons que vous n’en avez.',
+      spk ? '<b>Vous êtes le porte-parole</b> : appuyez sur les mesures achetées dans la liste ci-dessous. Le coût est retiré de vos jetons.'
+          : 'Le porte-parole <b>' + KR.esc(spkName) + '</b> appuie sur les mesures achetées dans l’application.',
+      'Sur le plateau : rendez les jetons à la banque et posez <b>1 jeton</b> sur la case de chaque mesure achetée.'];
+    next = 'Ensuite : les Menaces testent vos défenses.';
+  } else if (k === 'menaces') {
+    title = 'Menaces';
+    items = ['Retournez les deux menaces de la semaine l’une après l’autre et lisez le verso à voix haute.',
+      'L’enseignant les valide dans l’application : le résultat de <b>votre équipe</b> apparaît ci-dessous (Repoussée +3 · Limitée +1 · Touchée −gravité).'];
+    const open = (pub.men || []).some(m => m.res && m.res[pub.pl[me.pid][1]] && m.res[pub.pl[me.pid][1]].o === 'T' && m.res[pub.pl[me.pid][1]].d == null);
+    if (open) items.push(spk ? '<b>Touchée !</b> Lancez le dé puis appuyez sur son résultat ci-dessous : 1-2 → −1 jeton, 3-4 → −2, 5-6 → −3.' : '<b>Touchée !</b> Le porte-parole lance le dé : 1-2 → −1 jeton, 3-4 → −2, 5-6 → −3.');
+    next = 'Ensuite : défaussez les menaces résolues, +1 jeton de revenu, semaine suivante.';
+  } else if (k === 'next') {
+    title = 'Semaine suivante';
+    items = ['Défaussez les 2 menaces résolues, descendez celles de « Semaine prochaine » et tirez-en 2 nouvelles.',
+      'Votre équipe reçoit <b>+1 jeton de revenu de base</b> (déjà ajouté dans l’application) : prenez-le dans la banque.',
+      'L’enseignant avance le marqueur de semaine sur le plateau : attendez son signal.'];
+    wait = true;
+  } else if (k === 'inj') {
+    const ij = inject(st.id);
+    title = 'Week-end de crise : ' + (ij ? ij.titre : st.id);
+    if (!c.iopen) { wait = true; items = ['Retournez la carte <b>Inject</b> suivante. L’enseignant va l’ouvrir : <b>attendez</b>.']; }
+    else if (!c.rev) {
+      items = ['Lisez la carte et le texte ci-dessous.', 'Choisissez <b>votre</b> lettre, puis appuyez sur « Envoyer ma réponse ».',
+        'Concertez-vous <b>1 minute</b> avec l’équipe.',
+        spk ? '<b>Vous êtes le porte-parole</b> : saisissez la lettre de l’équipe et envoyez-la.' : 'Le porte-parole <b>' + KR.esc(spkName) + '</b> envoie la lettre de l’équipe.'];
+      next = 'Ensuite : correction, +3 points par bonne réponse d’équipe.';
+    } else items = ['Lisez la correction avec votre équipe. Votre équipe marque +3 points si sa lettre est la bonne.'];
+  } else if (k === 'final') {
+    title = 'Vendredi 23 h 58 : l’attaque finale';
+    items = ['Retournez la <b>carte finale</b> et lisez-la à voix haute.',
+      'Vérifiez sur votre plateau que vous avez les mesures <b>6 (MFA)</b> et <b>10 (arrivée-mutation-départ)</b> : l’application les compte d’après ce que le porte-parole a coché au Marché.',
+      'Rien à saisir : le résultat s’affiche ci-dessous.'];
+    wait = true;
+  } else if (k === 'bonus') {
+    title = 'Décompte final';
+    items = ['Vérifiez le bonus <b>Accès complet</b> (au moins une mesure dans chacun des 4 domaines : +3) et les <b>jetons restants</b> (1 point pour 2).', 'Rien à saisir.'];
+    wait = true;
+  } else {
+    title = 'Fin de partie';
+    items = ['Bravo ! Regardez votre titre et le classement des équipes ci-dessous.'];
+    wait = true;
+  }
+  return {title, items, next, wait};
+}
+
+/* ---------- panneaux de travail ---------- */
+function missionPanel() {
+  const c = pub.cur, m = mission(c.mid); if (!m) return '';
+  const r = myRec(), spk = isSpk(), tix = r[1];
+  const d = draft[c.mid] || (draft[c.mid] = {});
+  const dom = KR.DOM[m.dom];
+  const aid = pub.aid && pub.aid[me.pid];
+  const removed = aid && aid.q2 ? aid.q2 : [];
+  const card = `<div class="card"><span class="pill" style="background:${dom.c}">${dom.nom}</span> <b>${c.mid} · ${KR.esc(m.titre)}</b>
+  <p>${KR.esc(m.contexte)}</p>
+  <p><b>Q1.</b> ${KR.esc(m.q1)}</p><p><b>Q2.</b> ${KR.esc(m.q2)}</p></div>`;
+  if (c.rev) return card + revPanel(m);
+  const optsHtml = (name, val) => m.opts.map((o, i) => removed.includes(i) && name === 'q2' ? '' :
+    `<label style="display:block;margin:4px 0;padding:6px 8px;border:2px solid ${val === i ? '#1B2A49' : '#e1e6f1'};border-radius:10px"><input type="radio" name="${name}" value="${i}" ${val === i ? 'checked' : ''} onchange="setD('${name}',${i})"> <b>${KR.LET[i]}.</b> ${KR.esc(o)}</label>`).join('');
+  const sd = sent[c.mid] || {};
+  let h = card + `<div class="card"><h3>Votre réponse (individuelle)</h3>
+   <label><b>Q1</b> (réponse courte)</label><textarea id="q1" rows="2" style="width:100%" oninput="setD('q1',this.value)">${KR.esc(d.q1 || '')}</textarea>
+   <div style="margin-top:6px"><b>Q2</b> (une lettre)</div>${optsHtml('q2', d.q2 == null ? -1 : d.q2)}
+   ${aid && aid.q1 ? `<p class="muted">💡 Aide Q1 : ${KR.esc(aid.q1)}</p>` : ''}
+   <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+   <button class="btn" onclick="sendInd()">${sd.ind ? '✔ Réponse envoyée (renvoyer)' : 'Envoyer ma réponse'}</button>
+   <button class="btn alt sm" onclick="askAid('q1')">💡 Aide Q1 (−1 point perso)</button>
+   <button class="btn alt sm" onclick="askAid('q2')">💡 Aide Q2 : écarter une réponse (−1 point perso)</button></div></div>`;
+  if (spk) h += `<div class="card" style="border:2px solid ${myTeam().c}"><h3>★ Réponse de l’équipe (porte-parole)</h3>
+   <p class="muted">Une seule réponse pour toute l’équipe : c’est elle qui rapporte les jetons et les points de l’équipe.</p>
+   <label><b>Q1</b></label><textarea id="tq1" rows="2" style="width:100%" oninput="setD('tq1',this.value)">${KR.esc(d.tq1 || '')}</textarea>
+   <div style="margin-top:6px"><b>Q2</b></div>${optsHtml('tq2', d.tq2 == null ? -1 : d.tq2)}
+   <button class="btn green" style="margin-top:8px" onclick="sendTeam()">${sd.team ? '✔ Réponse d’équipe envoyée (renvoyer)' : 'Envoyer la réponse de l’équipe'}</button>
+   <button class="btn alt sm" onclick="copyMine()">Reprendre ma réponse</button></div>`;
+  else {
+    const ta = pub.ta && pub.ta[tix];
+    h += `<div class="card muted">Réponse d’équipe : ${ta && ta[0] + ta[1] === 2 ? '<span class="ok">envoyée par le porte-parole ✔</span>' : 'pas encore envoyée par le porte-parole.'}</div>`;
+  }
+  return h;
+}
+function revPanel(m) {
+  const c = pub.cur, rv = pub.rev, tix = myRec()[1];
+  if (!rv) return '<div class="card muted">Correction en cours d’affichage…</div>';
+  const tq1 = rv.tq1 && rv.tq1[tix], tq2 = rv.tq2 && rv.tq2[tix];
+  const d = draft[c.mid] || {};
+  const mark = (rv.sc && rv.sc[me.pid]);
+  return `<div class="card" style="border-left:6px solid #1E7B45"><h3>Correction</h3>
+  <p><b>Q1 : réponse attendue :</b> ${KR.esc(rv.r1)}</p><ol>${rv.corr1.map(x => '<li>' + KR.esc(x) + '</li>').join('')}</ol>
+  <p><b>Q2 : bonne réponse : ${KR.LET[rv.rep]}.</b> ${KR.esc(m.opts[rv.rep])}</p><ul style="padding-left:1.1em">${rv.corr2.map(x => '<li>' + KR.esc(x) + '</li>').join('')}</ul>
+  <p class="tag" style="background:#E7F4EC">À retenir : ${KR.esc(rv.retenir)}</p></div>
+  <div class="card"><h3>Résultat de l’équipe</h3>
+  <p>Q1 : ${tq1 === true ? '<span class="ok">juste (+2 jetons, +1 point)</span>' : tq1 === false ? '<span class="ko">non retenue</span>' : 'à valider par l’enseignant'}<br>
+  Q2 : ${tq2 === true ? '<span class="ok">juste (+1 jeton, +1 point)</span>' : tq2 === false ? '<span class="ko">fausse</span>' : 'pas de réponse d’équipe'}</p>
+  <p>Votre Q1 individuelle : ${mark === 1 ? '<span class="ok">juste</span>' : mark === 0 ? '<span class="ko">fausse</span>' : 'à indiquer :'}
+  <button class="btn alt sm" onclick="selfMark(1)">Ma Q1 était juste</button> <button class="btn alt sm" onclick="selfMark(0)">Ma Q1 était fausse</button></p></div>`;
+}
+function injectPanel() {
+  const st = curStep(), c = pub.cur, ij = inject(st.id); if (!ij || !c.iopen) return '';
+  const d = draft[st.id] || (draft[st.id] = {}), spk = isSpk(), sd = sent[st.id] || {};
+  const opts = (name, val) => ij.opts.map((o, i) => `<label style="display:block;margin:4px 0;padding:6px 8px;border:2px solid ${val === i ? '#1B2A49' : '#e1e6f1'};border-radius:10px"><input type="radio" name="${name}" value="${i}" ${val === i ? 'checked' : ''} onchange="setD('${name}',${i})"> <b>${KR.LET[i]}.</b> ${KR.esc(o)}</label>`).join('');
+  let h = `<div class="card"><b>${KR.esc(ij.titre)} · ${KR.esc(ij.heure)}</b><p>${KR.esc(ij.histoire)}</p><p><b>${KR.esc(ij.q)}</b></p></div>`;
+  if (c.rev && pub.rev) {
+    const rv = pub.rev, tix = myRec()[1], ok = rv.itq && rv.itq[tix];
+    return h + `<div class="card" style="border-left:6px solid #1E7B45"><h3>Correction</h3><p><b>Bonne réponse : ${KR.LET[rv.rep]}.</b> ${KR.esc(ij.opts[rv.rep])}</p><p>${KR.esc(rv.expl)}</p>
+    <p>Votre équipe : ${ok === true ? '<span class="ok">bonne réponse, +3 points</span>' : ok === false ? '<span class="ko">mauvaise réponse</span>' : 'pas de réponse d’équipe'}</p></div>`;
+  }
+  h += `<div class="card"><h3>Votre lettre</h3>${opts('q2', d.q2 == null ? -1 : d.q2)}<button class="btn" style="margin-top:8px" onclick="sendInd()">${sd.ind ? '✔ Envoyée (renvoyer)' : 'Envoyer ma réponse'}</button></div>`;
+  if (spk) h += `<div class="card" style="border:2px solid ${myTeam().c}"><h3>★ Lettre de l’équipe (porte-parole)</h3>${opts('tq2', d.tq2 == null ? -1 : d.tq2)}<button class="btn green" style="margin-top:8px" onclick="sendTeam()">${sd.team ? '✔ Envoyée (renvoyer)' : 'Envoyer la lettre de l’équipe'}</button></div>`;
+  return h;
+}
+function marchePanel() {
+  const t = myTeam(), spk = isSpk();
+  return `<div class="card"><h3>Les 12 mesures · vous avez ${t.j} jeton${t.j > 1 ? 's' : ''}</h3>` + KR.PUB.mesures.map(m => {
+    const n = m[0], on = t.m[n - 1], d = KR.DOM[m[3]], can = on || t.j >= m[4];
+    return `<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid #e1e6f1">
+      <span class="mz on" style="background:${d.c};border-color:${d.c};font-size:.9em">${n}</span>
+      <div style="flex:1"><b>${KR.esc(m[1])}</b> <span class="muted">· ${d.nom} · ${m[4]} jeton${m[4] > 1 ? 's' : ''}</span><div class="muted">${KR.esc(m[5])}</div></div>
+      ${spk ? `<button class="btn sm ${on ? 'red' : ''}" ${can ? '' : 'disabled'} onclick="buy(${n},${on ? 0 : 1})">${on ? 'Annuler' : 'Acheter'}</button>` : (on ? '<span class="ok">✔ acquise</span>' : '')}
+    </div>`;
+  }).join('') + (spk ? '' : '<p class="muted">Seul le porte-parole coche les achats.</p>') + '</div>';
+}
+function menPanel() {
+  const t = myTeam(), tix = myRec()[1], spk = isSpk();
+  const list = (pub.men || []);
+  if (!list.length) return '<div class="card muted">Aucune menace validée pour l’instant.</div>';
+  return list.map(m => {
+    const r = m.res && m.res[tix];
+    const lab = !r ? 'en attente' : r.o === 'F' ? '<span class="ok">Repoussée · +3 points</span>' : r.o === 'L' ? '<span class="ok">Limitée · +1 point</span>' : `<span class="ko">Touchée · −${m.grav} point${m.grav > 1 ? 's' : ''}${r.d != null ? ' · dé ' + r.d + ' → −' + r.jl + ' jeton' + (r.jl > 1 ? 's' : '') : ''}</span>`;
+    let dice = '';
+    if (r && r.o === 'T' && r.d == null) dice = spk ? '<div style="margin-top:6px">Résultat du dé : ' + [1,2,3,4,5,6].map(d => `<button class="btn sm" onclick="roll('${m.id}',${d})">${d}</button>`).join(' ') + '</div>' : '<div class="muted">Le porte-parole lance le dé.</div>';
+    return `<div class="card"><b>${m.id} · ${KR.esc(m.titre)}</b> <span class="muted">(gravité ${m.grav})</span><br>${lab}${r && r.o === 'T' ? '<div class="muted">Le verso de la carte indique les mesures qui manquaient.</div>' : ''}${dice}</div>`;
+  }).join('');
+}
+function finPanel() {
+  const st = curStep(), tix = myRec() ? myRec()[1] : 0;
+  let h = '';
+  if (st.k === 'final' && pub.fin) {
+    const r = pub.fin.res[tix];
+    h += `<div class="card"><h3>Résultat de l’attaque finale</h3>${r ? (r.o === 'F' ? '<span class="ok">Repoussée · +5 points (mesures 6 et 10)</span>' : r.o === 'L' ? '<span class="ok">Limitée · +2 points (une seule des mesures 6 et 10)</span>' : '<span class="ko">Touchée · −4 points (ni 6 ni 10)</span>') : 'en attente'}</div>`;
+  }
+  if (st.k === 'bonus' && pub.bon) {
+    const b = pub.bon[tix];
+    h += `<div class="card"><h3>Bonus</h3>Accès complet : ${b.ac ? '<span class="ok">oui, +3 points</span>' : '<span class="ko">non (il manque un domaine)</span>'}<br>Jetons restants : ${b.jr} → +${b.pj} point${b.pj > 1 ? 's' : ''}</div>`;
+  }
+  if (st.k === 'end' || st.k === 'bonus') h += ranking(true);
+  return h;
+}
+function ranking(titles) {
+  const arr = pub.teams.map((t, i) => ({t, i})).sort((a, b) => b.t.p - a.t.p || b.t.m.filter(x => x).length - a.t.m.filter(x => x).length || b.t.j - a.t.j);
+  return `<div class="card"><h3>Classement des équipes</h3>` + arr.map((x, r) => `<div style="display:flex;justify-content:space-between;padding:4px 0"><span><b>${r + 1}.</b> <span class="pill" style="background:${x.t.c}">${KR.esc(x.t.n)}</span>${titles && curStep().k === 'end' ? ' <span class="muted">' + KR.titre(x.t.p) + '</span>' : ''}</span><b>${x.t.p} pts</b></div>`).join('') + '</div>';
+}
+
+/* ---------- actions ---------- */
+window.setD = (k, v) => { const id = curId(); (draft[id] || (draft[id] = {}))[k] = v; saveD(); if (typeof v === 'number') render(true); };
+function curId() { const st = curStep(); return st.k === 'mission' ? pub.cur.mid : st.id; }
+window.sendInd = () => { const id = curId(), d = draft[id] || {}; send({k:'A', mid:id, q1:(d.q1 || '').slice(0, 200), q2: d.q2 == null ? -1 : d.q2}); (sent[id] || (sent[id] = {})).ind = true; saveD(); render(true); };
+window.sendTeam = () => { const id = curId(), d = draft[id] || {}; send({k:'Y', mid:id, q1:(d.tq1 || '').slice(0, 200), q2: d.tq2 == null ? -1 : d.tq2}); (sent[id] || (sent[id] = {})).team = true; saveD(); render(true); };
+window.copyMine = () => { const id = curId(), d = draft[id] || (draft[id] = {}); d.tq1 = d.q1; d.tq2 = d.q2; saveD(); render(true); };
+window.askAid = kind => { if (!confirm('Cette aide coûte 1 point personnel. Continuer ?')) return; send({k:'H', mid: curId(), kind}); };
+window.selfMark = ok => send({k:'C', mid: pub.cur.mid, ok});
+window.buy = (n, on) => send({k:'B', n, on});
+window.roll = (mid, d) => { if (confirm('Confirmer le résultat du dé : ' + d + ' ?')) send({k:'D', mid, d}); };
+
+/* ---------- rendu principal ---------- */
+let lastKey = {};
+function setIf(id, key, html) { if (lastKey[id] !== key) {
+    const ae = document.activeElement; if (ae && ae.tagName === 'TEXTAREA' && $(id).contains(ae)) return; lastKey[id] = key; $(id).innerHTML = html; } }
+function render(force) {
+  renderTop();
+  const body = $('body');
+  if (!pub) { body.innerHTML = '<div class="card">Connexion à la séance…<br><span class="muted">Si cela dure, vérifiez le réseau ou prévenez l’enseignant.</span></div>'; return; }
+  const r = myRec();
+  if (!r) { // inscription
+    lastKey = {};
+    body.innerHTML = `<div class="card"><h2>Rejoindre la partie</h2>
+     <label>Votre prénom</label><input id="nm" maxlength="18" value="${KR.esc(me.n || '')}" style="width:100%;padding:8px;margin:4px 0 10px;border:2px solid #cfd6e6;border-radius:10px">
+     <div>Choisissez votre équipe :</div><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
+     ${pub.teams.map((t, i) => `<button class="btn" style="background:${t.c}" onclick="join(${i})">${KR.esc(t.n)}</button>`).join('')}</div>
+     <p id="err" class="ko"></p><p class="muted">Pas d’équipe pour l’instant ? Attendez les indications de l’enseignant.</p></div>`;
+    return;
+  }
+  if (body.innerHTML) body.innerHTML = '';
+  const st = curStep(), td = todo();
+  const hdr = `<div class="card" style="border-left:8px solid #1B2A49"><div class="muted">${KR.esc(KR.stepLabel(st))} <span id="timer" style="float:right;font-weight:800"></span></div>
+    <h2 style="margin-top:4px">${td.wait ? '⏳' : '👉'} ${KR.esc(td.title)} : que faire maintenant ?</h2>
+    <ol style="padding-left:1.2em;margin:.3em 0">${td.items.map(x => '<li style="margin:4px 0">' + x + '</li>').join('')}</ol>
+    ${td.next ? `<div class="muted" style="margin-top:6px">${KR.esc(td.next)}</div>` : ''}</div>`;
+  setIf('todo', JSON.stringify([pub.si, pub.cur, r[1], isSpk(), pub.dgx, (pub.men || []).map(m => m.id + JSON.stringify(m.res && m.res[r[1]]))]), hdr);
+  // panneau de travail
+  let key, html = '';
+  const c = pub.cur || {};
+  if (st.k === 'mission' && c.mid) { key = ['m', c.mid, c.rev, isSpk(), JSON.stringify(pub.aid && pub.aid[me.pid]), JSON.stringify(pub.rev && [pub.rev.tq1 && pub.rev.tq1[r[1]], pub.rev.tq2 && pub.rev.tq2[r[1]], pub.rev.sc && pub.rev.sc[me.pid]]), JSON.stringify(sent[c.mid]), pub.ta && JSON.stringify(pub.ta[r[1]])]; html = missionPanel(); }
+  else if (st.k === 'inj' && c.iopen) { key = ['i', st.id, c.rev, isSpk(), JSON.stringify(sent[st.id]), pub.rev && JSON.stringify(pub.rev.itq && pub.rev.itq[r[1]])]; html = injectPanel(); }
+  else if (st.k === 'marche') { key = ['mk', JSON.stringify(myTeam().m), myTeam().j, isSpk()]; html = marchePanel(); }
+  else if (st.k === 'menaces') { key = ['mn', JSON.stringify(pub.men), isSpk()]; html = menPanel(); }
+  else if (['final', 'bonus', 'end'].includes(st.k)) { key = ['f', st.k, JSON.stringify(pub.fin), JSON.stringify(pub.bon), JSON.stringify(pub.teams.map(t => t.p))]; html = finPanel(); }
+  else { key = ['x', st.k]; html = '<div class="card muted">Rien à saisir pour cette étape.</div>'; }
+  setIf('work', JSON.stringify(key) + (force ? Math.random() : ''), html);
+  setIf('rank', JSON.stringify([pub.teams.map(t => [t.p, t.j]), st.k]), ['end', 'bonus'].includes(st.k) ? '' : ranking(false));
+  if (pub.tm) renderTimer();
+}
+render();
+
+document.addEventListener('focusout', () => setTimeout(() => render(), 80));
+</script>
+</body></html>
