@@ -2498,7 +2498,7 @@ function center(st) {
 function render() {
   const st = KR.steps[pub.si];
   const sorted = pub.teams.map((T, i) => ({T, i}));
-  $('root').innerHTML = `<div class="hd"><div><b>LES CLÉS DU ROYAUME</b><div class="small">${KR.esc(KR.stepLabel(st))}</div></div><div id="tmr" class="timer">${pub.tm ? '⏱' : ''}</div><div class="small">${status}</div></div>
+  $('root').innerHTML = `<div class="hd"><div><b>LES CLÉS DU ROYAUME</b>${pub.test ? ' <span class="pill" style="background:#C77700">MODE TEST</span>' : ''}<div class="small">${KR.esc(KR.stepLabel(st))}</div></div><div id="tmr" class="timer">${pub.tm ? '⏱' : ''}</div><div class="small">${status}</div></div>
    ${center(st)}<div class="teams">${sorted.map(x => teamCard(x.T, x.i, st)).join('')}</div>
    <div class="ev">${(pub.ev || []).slice(-4).reverse().map(e => `<span>${KR.esc(pub.teams[e[0]] ? pub.teams[e[0]].n : '')} ${e[1] ? (e[1] > 0 ? '+' : '') + e[1] + ' j. ' : ''}${e[2] ? (e[2] > 0 ? '+' : '') + e[2] + ' pt ' : ''}· ${KR.esc(e[3])}</span>`).join('')}</div>
    <div class="ft">${KR.FOOT}</div>`;

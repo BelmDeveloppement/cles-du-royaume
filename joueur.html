@@ -414,11 +414,11 @@ function render(force) {
   }
   if (body.innerHTML) body.innerHTML = '';
   const st = curStep(), td = todo();
-  const hdr = `<div class="card" style="border-left:8px solid #1B2A49"><div class="muted">${KR.esc(KR.stepLabel(st))} <span id="timer" style="float:right;font-weight:800"></span></div>
+  const hdr = `<div class="card" style="border-left:8px solid #1B2A49"><div class="muted">${pub.test ? '<b style="color:#C77700">MODE TEST</b> · ' : ''}${KR.esc(KR.stepLabel(st))} <span id="timer" style="float:right;font-weight:800"></span></div>
     <h2 style="margin-top:4px">${td.wait ? '⏳' : '👉'} ${KR.esc(td.title)} : que faire maintenant ?</h2>
     <ol style="padding-left:1.2em;margin:.3em 0">${td.items.map(x => '<li style="margin:4px 0">' + x + '</li>').join('')}</ol>
     ${td.next ? `<div class="muted" style="margin-top:6px">${KR.esc(td.next)}</div>` : ''}</div>`;
-  setIf('todo', JSON.stringify([pub.si, pub.cur, r[1], isSpk(), pub.dgx, (pub.men || []).map(m => m.id + JSON.stringify(m.res && m.res[r[1]]))]), hdr);
+  setIf('todo', JSON.stringify([pub.test, pub.si, pub.cur, r[1], isSpk(), pub.dgx, (pub.men || []).map(m => m.id + JSON.stringify(m.res && m.res[r[1]]))]), hdr);
   // panneau de travail
   let key, html = '';
   const c = pub.cur || {};
