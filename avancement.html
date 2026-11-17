@@ -44,67 +44,139 @@ KR.hash = () => { const o = {}; location.hash.replace(/^#/, '').split('&').forEa
 KR.mesureByN = n => KR.PUB.mesures.find(m => m[0] === n);
 KR.owned = t => KR.PUB.mesures.filter(m => t.m[m[0] - 1]).map(m => m[0]);
 
-/* ---------------- Relais (ntfy) ---------------- */
-KR.Relay = function (base, sid) {
+/* ---------------- Relais : Cloudflare (WebSocket) en voie principale, ntfy en secours ---------------- */
+KR.CH = 1500; KR.CHW = 50000;
+KR.DEFAULT_WS = 'wss://cpro-relay.belmdeveloppement.workers.dev/ps';   // relais Cloudflare (WebSocket, port 443) ; ntfy reste le repli
+KR.Relay = function (base, sid, ws) {
   this.base = (base || KR.DEFAULT_RELAY).replace(/\/+$/, '');
-  this.tH = 'kr' + sid + 'h'; this.tP = 'kr' + sid + 'p';
-  this.status = 'init';
+  this.tH = 'kr' + sid + 'h'; this.tP = 'kr' + sid + 'p'; this.tS = 'kr' + sid + 's';
+  this.room = sid;
+  const h = KR.hash(); this.wsBase = h.ws === '0' ? '' : (h.ws || (ws === undefined ? KR.DEFAULT_WS : ws));
+  this._subs = {}; this._acks = {}; this._seen = new Set(); this._ws = null; this._wsUp = false; this._fails = 0; this._dead = false;
 };
-KR.Relay.prototype.post = async function (topic, obj) {
-  const body = JSON.stringify(obj);
-  for (let i = 0; i < 4; i++) {
-    try { const r = await fetch(this.base + '/' + topic, {method:'POST', body}); if (r.ok) return true; if (r.status === 429) await KR.sleep(3000); }
+KR.Relay.prototype.useWs = function (topic) { return !!this.wsBase && (topic === this.tH || topic === this.tP || topic === this.tS); };
+KR.Relay.prototype.wsUp = function () { return this._wsUp; };
+KR.Relay.prototype._statusAll = function () { Object.keys(this._subs).forEach(t => this._subs[t].upd && this._subs[t].upd()); };
+KR.Relay.prototype._wsOpen = function () {
+  if (!this.wsBase || this._ws || this._dead) return;
+  let w; try { w = new WebSocket(this.wsBase + (this.wsBase.indexOf('?') > 0 ? '&' : '?') + 'room=' + encodeURIComponent(this.room)); }
+  catch (e) { this._wsRetry(); return; }
+  this._ws = w; let ping = null, closed = false;
+  w.onopen = () => {
+    this._wsUp = true; this._fails = 0;
+    Object.keys(this._subs).forEach(t => { if (this._subs[t].ws) w.send(JSON.stringify({a: 'sub', t, since: this._subs[t].last})); });
+    ping = setInterval(() => { try { w.send('ping'); } catch (e) {} }, 25000);
+    this._statusAll();
+  };
+  w.onmessage = e => {
+    if (e.data === 'pong') return;
+    let m; try { m = JSON.parse(e.data); } catch (x) { return; }
+    if (m.a === 'ack') { const k = this._acks[m.u]; if (k) { clearTimeout(k.t); delete this._acks[m.u]; if (m.n === 0 && k.fb) k.fb(); } return; }
+    if (m.a !== 'msg') return;
+    const s = this._subs[m.t]; if (!s) return;
+    s.last = m.id;
+    let o; try { o = JSON.parse(m.m); } catch (x) { return; }
+    s.cb(o, m.t === this.tS && m.ts ? {time: m.ts / 1000, ws: true} : undefined);   // sujet diapos : horodatage serveur (pour ignorer les diapos d'avant l'ouverture)
+  };
+  const end = () => {
+    if (closed) return; closed = true; clearInterval(ping);
+    this._ws = null; this._wsUp = false; this._fails++; this._statusAll(); this._wsRetry();
+  };
+  w.onclose = end; w.onerror = end;
+};
+KR.Relay.prototype._wsRetry = function () { if (this._dead) return; setTimeout(() => this._wsOpen(), Math.min(15000, 1000 * Math.pow(2, Math.min(this._fails, 4)))); };
+KR.Relay.prototype._wsSend = function (o) { try { this._ws.send(JSON.stringify(o)); return true; } catch (e) { return false; } };
+KR.Relay.prototype._ntfy = async function (topic, body) {
+  for (let i = 0; i < 5; i++) {
+    try { const r = await fetch(this.base + '/' + topic, {method: 'POST', body}); if (r.ok) return true; if (r.status === 429) await KR.sleep(4000); }
     catch (e) { /* réseau */ }
     await KR.sleep(500 * (i + 1));
   }
   return false;
 };
+/* post : par WebSocket si disponible (avec repli sur ntfy si personne n'écoute ou pas d'accusé), sinon par ntfy */
+KR.Relay.prototype.post = async function (topic, obj) {
+  obj = Object.assign({_u: KR.rid(10)}, obj);
+  const body = JSON.stringify(obj);
+  if (this.useWs(topic) && this._wsUp) {
+    const fb = () => this._ntfy(topic, body);
+    const t = setTimeout(() => { delete this._acks[obj._u]; fb(); }, 2500);
+    this._acks[obj._u] = {t, fb};
+    if (this._wsSend({a: 'pub', t: topic, m: body, u: obj._u})) return true;
+    clearTimeout(t); delete this._acks[obj._u];
+  }
+  return this._ntfy(topic, body);
+};
 KR.Relay.prototype.sub = function (topic, since, onmsg, onstatus) {
-  let last = since, es = null, dead = false;
+  let last = since, es = null, dead = false, esOk = false;
+  const seen = this._seen;
+  const deliver = (o, m) => {
+    if (o && o._u) { if (seen.has(o._u)) return; seen.add(o._u); if (seen.size > 20000) seen.clear(); }
+    onmsg(o, m);
+  };
+  const upd = () => onstatus && onstatus(esOk || this._wsUp ? 'ok' : 'retry');
   const open = () => {
     if (dead) return;
     es = new EventSource(this.base + '/' + topic + '/sse?since=' + encodeURIComponent(last));
-    es.onopen = () => onstatus && onstatus('ok');
-    es.onerror = () => { onstatus && onstatus('retry'); try { es.close(); } catch (e) {} setTimeout(open, 2500); };
+    es.onopen = () => { esOk = true; upd(); };
+    es.onerror = () => { esOk = false; upd(); try { es.close(); } catch (e) {} setTimeout(open, this._wsUp ? 15000 : 2500); };
     es.onmessage = e => {
       let m; try { m = JSON.parse(e.data); } catch (x) { return; }
       if (m.event && m.event !== 'message') return;
       if (m.id) last = m.id;
       let o; try { o = JSON.parse(m.message); } catch (x) { return; }
-      onmsg(o, m);
+      deliver(o, m);
     };
   };
   open();
-  return () => { dead = true; try { es.close(); } catch (e) {} };
+  if (this.useWs(topic)) {
+    this._subs[topic] = {last: 0, cb: (o, mm) => deliver(o, mm), ws: true, upd};
+    if (this._wsUp) this._wsSend({a: 'sub', t: topic, since: 0}); else this._wsOpen();
+  }
+  return () => { dead = true; try { es.close(); } catch (e) {} delete this._subs[topic]; };
 };
-/* Etat diffusé en morceaux (limite ntfy : 4096 octets) */
-KR.CH = 1500;
 KR.Relay.prototype.pubState = function (st) {
   const s = JSON.stringify(st), n = Math.ceil(s.length / KR.CH);
-  this._pending = {v: st.v, s, n};
-  if (this._busy) return;
-  this._busy = true;
-  (async () => {
-    while (this._pending) {
-      const p = this._pending; this._pending = null;
-      let ok = true;
-      for (let i = 0; i < p.n && ok; i++) ok = await this.post(this.tH, {v: p.v, i, n: p.n, d: p.s.slice(i * KR.CH, (i + 1) * KR.CH)});
-      this.lastOk = ok;
+  const ntfyGo = () => {               // copie sur ntfy (repli) : seulement si le relais ne suffit pas, pour ménager le quota de ntfy.sh
+    this._pending = {v: st.v, s, n};
+    if (this._busy) return;
+    this._busy = true;
+    (async () => {
+      while (this._pending) {
+        const p = this._pending; this._pending = null;
+        let ok = true;
+        for (let i = 0; i < p.n && ok; i++) ok = await this._ntfy(this.tH, JSON.stringify({_u: KR.rid(10), v: p.v, i, n: p.n, d: p.s.slice(i * KR.CH, (i + 1) * KR.CH)}));
+        this.lastOk = ok;
+      }
+      this._busy = false;
+    })();
+  };
+  if (this.wsBase && this._wsUp) {     // WebSocket : état complet en un ou quelques gros messages, immédiat
+    const k = Math.ceil(s.length / KR.CHW);
+    let sent = true;
+    for (let i = 0; i < k; i++) {
+      const u = KR.rid(10);
+      if (i === 0) {                   // accusé du relais : si aucun abonné (n=0) ou pas de réponse en 2,5 s, on recopie sur ntfy
+        const t = setTimeout(() => { delete this._acks[u]; ntfyGo(); }, 2500);
+        this._acks[u] = {t, fb: ntfyGo};
+      }
+      if (!this._wsSend({a: 'pub', t: this.tH, m: JSON.stringify({_u: KR.rid(10), v: st.v, i, n: k, d: s.slice(i * KR.CHW, (i + 1) * KR.CHW)}), u: i === 0 ? u : undefined})) sent = false;
     }
-    this._busy = false;
-  })();
+    if (sent && KR.hash().ntfy !== '1') return;     // ajouter « &ntfy=1 » au lien de la tour pour toujours doubler sur ntfy
+  }
+  ntfyGo();
 };
 KR.Assembler = function (cb) {
   const parts = {}; let cur = -1;
   return o => {
     if (o == null || o.v == null || o.v < cur) return;
-    const p = parts[o.v] || (parts[o.v] = {n: o.n, a: []});
+    const key = o.v + '/' + o.n, p = parts[key] || (parts[key] = {n: o.n, a: []});
     p.a[o.i] = o.d;
     let ok = true; for (let i = 0; i < p.n; i++) if (p.a[i] == null) ok = false;
     if (ok && o.v > cur) {
       cur = o.v;
       try { cb(JSON.parse(p.a.join(''))); } catch (e) { console.error(e); }
-      Object.keys(parts).forEach(k => { if (+k < cur) delete parts[k]; });
+      Object.keys(parts).forEach(k => { if (parseInt(k, 10) < cur) delete parts[k]; });
     }
   };
 };
